@@ -240,7 +240,7 @@ detect_platform()
 }
 
 #
-# Prints usage information for ruby-install.
+# Prints usage information
 #
 usage()
 {
@@ -269,7 +269,7 @@ USAGE
 }
 
 #
-# Parses command-line options for ruby-install.
+# Parses command-line options
 #
 parse_options()
 {
