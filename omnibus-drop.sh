@@ -173,7 +173,9 @@ load_project()
   fi
 }
 
-
+#
+# Detects OS and sets $platform, $release and $arch
+#
 detect_platform()
 {
   arch=$(uname -m)
@@ -217,11 +219,11 @@ detect_platform()
   fi
 
   if [[ -z $platform ]]; then
-    error "Unable to determine platform version!"
+    error "Unable to determine what OS platform this is!"
     return 1
   fi
 
-  # Remap to find major release version
+  # Remap to major release version for some platforms
   local major_release=$(echo $release | cut -d. -f1)
   case "$platform" in
     redhat|centos|amazon)
