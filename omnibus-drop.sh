@@ -193,7 +193,7 @@ detect_platform()
   # Apple OS X
   elif [[ -f /usr/bin/sw_vers ]]; then
     platform="darwin"
-    u Matching the tab-space with sed is error-prone
+    # Matching the tab-space with sed is error-prone
     release=$(sw_vers | awk '/^ProductVersion:/ { print $2 }' | cut -d. -f1,2)
     local x86_64_capable=$(sysctl -n hw.optional.x86_64)
     if [[ $x86_64_capable -eq 1 ]]; then
