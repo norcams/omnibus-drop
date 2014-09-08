@@ -251,7 +251,7 @@ usage: omnibus-drop [OPTIONS] [PROJECT [VERSION]]
 
 Options:
 
-  -d, --src-dir DIR   Directory to download package into
+  -d, --dest-dir DIR  Directory to download package into
   -M, --mirror URL    Alternate mirror to download the project from
   -u, --url URL       Alternate URL to download the package from
   -s, --sha256 SHA256 Checksum of the package
@@ -279,8 +279,8 @@ parse_options()
 
   while [[ $# -gt 0 ]]; do
     case $1 in
-      -d|--src-dir)
-        src_dir="$2"
+      -d|--dest-dir)
+        dest_dir="$2"
         shift 2
         ;;
       -M|--mirror)
