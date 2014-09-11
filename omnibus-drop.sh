@@ -10,12 +10,13 @@ url_file="url.txt"
 version_file="version.txt"
 platform_file="platform.txt"
 functions_file="functions.sh"
+checksum_file="sha256.txt"
 
 #
-# Place holder functions for pre and postinstall tasks.
+# Placeholder functions for pre and postinstall tasks.
 #
-function preinstall() { return; }
-function postinstall() { return; }
+preinstall() { return; }
+postinstall() { return; }
 
 #
 # Only use sudo if not already root.
@@ -35,7 +36,7 @@ fi
 #
 # Prints a log message.
 #
-function log()
+log()
 {
   if [[ -t 1 ]]; then
     echo -e "\x1b[1m\x1b[32m>>>\x1b[0m \x1b[1m$1\x1b[0m"
@@ -92,22 +93,24 @@ expand_url()
 #
 # Searches a file for a key and echos the value.
 # If the key cannot be found, the third argument will be echoed.
+# If the file is missing, ignore errors
 #
-function fetch()
+fetch()
 {
-  local file="$project_path/$1.txt"
+  local file="$1.txt"
   local key="$2"
-  local pair="$(grep -E "^$key:" "$file")"
+  local pair="$(grep -s -E "^$key:" "$file")"
 
   echo "${pair##$key:*([[:space:]])}"
 }
 
-valid_project()
+validate_project_file()
 {
   local p="$1"
-  if [[ -f "$p/$url_file" ]]; then
-    grep -q -E '^[-_\ a-zA-Z0-9]+:\ .*$' "$p/$url_file" || return $?
+  if [[ -s "$p" ]]; then
+    grep -q -E '^[-_\ a-zA-Z0-9]+:\ .*$' "$p" || return $?
   else
+    # File does not exist or is zero-sized
     return 1
   fi
 }
@@ -116,12 +119,14 @@ known_projects()
 {
   local known_projects=()
   for p in "$working_dir"/*; do
-    valid_project "$p" || continue
+    # A minimal project is a $url_file
+    validate_project_file "$p/$url_file" || continue
     known_projects+=("$p")
   done
 
   if [[ ${#known_projects[@]} -eq 0 ]]; then
-    return 1
+    warn "No valid projects found."
+    return 0
   fi
 
   for p in "${known_projects[@]}"; do
@@ -141,28 +146,38 @@ known_projects()
   done
 }
 
+#
+# Load and verify metadata from files and command line options. A minimal
+# project must provide the following
+#
+#   - $project from the command line
+#   - $version from the command line or $version_file
+#   - $url from the command line or $url_file
+#
 load_project()
 {
-  project_path="$working_dir/$project"
-  valid_project "$project_path" || return $?
-
-  local expanded_version=$(fetch "version" "$version")
+  local expanded_version=$(fetch "$project_path/$version_file" "$version")
   version="${expanded_version:-$version}"
 
-  # Read url_key from platform metadata or fall back to default_url_key
+  # Read platform_tag from metadata or fall back to default_tag
   local default_tag="$platform/$release/$arch"
-  local tag=$(fetch "platform" "$platform/$release/$arch")
+  local tag=$(fetch "$project_path/$platform_file" "$platform/$release/$arch")
   platform_tag=${tag:-$default_tag}
 
-  # Read url_value from metadata if it exists but also allow it to be
-  # provided or overridden from the command line
-  local url_value=$(fetch "url" "$platform_tag")
-  url_value=${package_url:-$url_value}
+  # Read url from metadata file or command line
+  local url_value=$(fetch "$project_path/$url_file" "$platform_tag")
+  url_value=${url:-$url_value}
   # Substitute any variables in url_value with expand_url()
-  package_url="$(expand_url $url_value)"
+  url="$(expand_url $url_value)"
+  # If url is still a zero-length string we fail
+  if [[ -z "$url" ]]; then
+    error "Package download URL not set in project files or on the command line"
+    error "Please provide a $project/$url_file or use the -u option"
+    exit 1
+  fi
 
   # Assume last part of URL is the filename
-  package_filename="${package_url##*/}"
+  package_filename="${url##*/}"
   # Derive package type from file extension
   package_type="${package_filename##*.}"
   package_download_path="$project_path/$platform_tag"
@@ -251,21 +266,21 @@ usage: omnibus-drop [OPTIONS] [PROJECT [VERSION]]
 
 Options:
 
-  -d, --dest-dir DIR  Directory to download package into
-  -M, --mirror URL    Alternate mirror to download the project from
-  -u, --url URL       Alternate URL to download the package from
-  -s, --sha256 SHA256 Checksum of the package
-  --no-download       Use the previously downloaded package
-  --no-verify         Do not verify the downloaded package
-  --no-scripts        Do not load functions.sh when installing
-  -V, --version       Prints the version
-  -h, --help          Prints this message
+    -d, --dest-dir DIR     Directory to download package into
+    -M, --mirror URL       Alternate mirror to download project metadata from
+    -u, --url URL          Alternate URL to download the package from
+    -s, --sha256 SHA256    Checksum of the package
+    --no-download          Use a previously downloaded package
+    --no-verify            Do not verify the downloaded package
+    --no-scripts           Do not load functions.sh when installing
+    -V, --version          Prints the version
+    -h, --help             Prints this message
 
 Examples:
 
-  $ omnibus-drop puppet
-  $ omnibus-drop puppet 3.6.2
-  $ omnibus-drop -M https://url.to/projects/root puppet
+    $ omnibus-drop puppet
+    $ omnibus-drop puppet 3.6.2
+    $ omnibus-drop -M https://url.to/projects/root puppet
 
 USAGE
 }
@@ -280,7 +295,7 @@ parse_options()
   while [[ $# -gt 0 ]]; do
     case $1 in
       -d|--dest-dir)
-        dest_dir="$2"
+        src_dir="$2"
         shift 2
         ;;
       -M|--mirror)
@@ -288,7 +303,7 @@ parse_options()
         shift 2
         ;;
       -u|--url)
-        package_url="$2"
+        url="$2"
         shift 2
         ;;
       -s|--sha256)
@@ -329,10 +344,12 @@ parse_options()
   case ${#argv[*]} in
     2)
       project="${argv[0]}"
+      project_path="$working_dir/$project"
       version="${argv[1]}"
       ;;
     1)
       project="${argv[0]}"
+      project_path="$working_dir/$project"
       version="stable"
       ;;
     0)
@@ -351,7 +368,7 @@ parse_options()
 #
 # Downloads a URL.
 #
-function download()
+download()
 {
   local url="$1"
   local dest="$2"
@@ -359,10 +376,9 @@ function download()
   [[ -d "$dest" ]] && dest="$dest/${url##*/}"
   [[ -f "$dest" ]] && return
 
-  echo "DEBUG $dest"
   case "$downloader" in
-    wget) wget -c -O "$dest.part" "$url" || return $?         ;;
-    curl) curl -f -L -C - -o "$dest.part" "$url" || return $? ;;
+    wget) wget -c -O "$dest.part" "$url" || return $? ;;
+    curl) curl -sfLC - -o "$dest.part" "$url" || return $? ;;
     "")
       error "Could not find wget or curl"
       return 1
@@ -373,22 +389,65 @@ function download()
 }
 
 #
-# Downloads a package
+# Mirrors project files
 #
-function download_package()
+mirror_project()
 {
-  log "Downloading $package_url"
-  mkdir -p "$package_download_path" || return $?
-  download "$package_url" "$package_download_path" || return $?
+  local data_found=0
+
+  # Display remote and local paths, warn if local path already exists
+  # as we then skip downloading existing files
+  log "Mirroring remote project $project_mirror to $project_path"
+  mkdir -p "$project_path" || return $?
+
+  # Main project metadata download loop  
+  for dl in "$url_file" \
+            "$version_file" \
+            "$platform_file" \
+            "$functions_file" \
+            "$checksum_file" ; do
+    # Skip any files that already exits and set data_found=1
+    if [[ -s "$project_path/$dl" ]]; then
+      warn "$project_mirror/$dl -> $project/$dl: File already exists, skipping as OK"
+      data_found=1
+      continue
+    fi
+    # Try downloading
+    local dl_exit_code=$(download "$project_mirror/$dl" "$project_path")
+    # If we get a non-zero file log and set dl_ok
+    if [[ $dl_exit_code -eq 0 && -s "$project_path/$dl" ]]; then
+      log "$project_mirror/$dl -> $project/$dl: OK"
+      data_found=1
+    fi
+  done
+
+  # Fail if we didn't get any files
+  if [[ $data_found -eq 0 ]]; then
+    warn "Could not mirror, no data found."
+    return 1 
+  fi
 }
 
+#
+# Downloads a package.
+#
+download_package()
+{
+  log "Downloading package: $url"
+  mkdir -p "$package_download_path" || return $?
+  download "$url" "$package_download_path" || return $?
+}
+
+#
+# Executes a package install based on package type (rpm, deb, etc).
+#
 install_p()
 {
   local type="$1"
   local package="$2"
   case "$type" in
     rpm)
-      $sudo rpm -Uvh --oldpackage --replacepkgs "$package" || return $?
+      $sudo yum -y install "$package" || return $?
       ;;
     deb)
       $sudo dpkg -i "$package"
@@ -399,30 +458,41 @@ install_p()
   esac
 }
 
-main_install() {
+#
+# Wraps install_p() with type and full path to the package
+#
+main_install()
+{
+  log "Installing $project $version from $package_filename"
   install_p "$package_type" "$package_download_path/$package_filename" || return $?
+  log "Successfully installed $project $version from $package_filename"
 }
 
+#
+# Main script loop
+#
 detect_platform || exit $?
 
-log "omnibus-drop v${ver} on platform=$platform release=$release arch=$arch"
-
 if [[ $# -eq 0 ]]; then
+  log "omnibus-drop v${ver} platform=$platform release=$release arch=$arch"
   known_projects
   exit
 fi
 
 parse_options "$@" || exit $?
 
-load_project || fail "Could not load $project_path"
-
-if [[ ! $no_download -eq 1 ]]; then
-  download_package || fail "Download of $package_url failed!"
+if [[ -n "$project_mirror" ]]; then
+  mirror_project || fail "Mirroring failed."
 fi
 
-log "Installing $project $version from $package_filename"
-preinstall || fail "Preinstall tasks failed!"
-main_install || fail "Installation failed!" 
-postinstall || fail "Postinstall tasks failed"
+load_project || fail "Could not load project: $project"
 
-log "Successfully installed $project $version from $package_filename"
+if [[ ! $no_download -eq 1 ]]; then
+  download_package || fail "Download of $url failed."
+fi
+
+preinstall || fail "Preinstall tasks failed."
+main_install || fail "Installation failed." 
+postinstall || fail "Postinstall tasks failed."
+
+
