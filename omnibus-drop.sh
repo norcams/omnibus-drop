@@ -97,7 +97,7 @@ expand_url()
 #
 fetch()
 {
-  local file="$1.txt"
+  local file="$1"
   local key="$2"
   local pair="$(grep -s -E "^$key:" "$file")"
 
@@ -173,7 +173,7 @@ load_project()
   if [[ -z "$url" ]]; then
     error "Package download URL not set in project files or on the command line"
     error "Please provide a $project/$url_file or use the -u option"
-    exit 1
+    return 1
   fi
 
   # Assume last part of URL is the filename
@@ -181,7 +181,7 @@ load_project()
   # Derive package type from file extension
   package_type="${package_filename##*.}"
   package_download_path="$project_path/$platform_tag"
-  
+
   # If scripts are not disabled, source $functions_file if it exists
   if [[ -z $no_scripts && -f "$project_path/$functions_file" ]]; then
     source "$project_path/$functions_file" || return $?
@@ -377,7 +377,7 @@ download()
   [[ -f "$dest" ]] && return
 
   case "$downloader" in
-    wget) wget -c -O "$dest.part" "$url" || return $? ;;
+    wget) wget --progress=bar:force -c -O "$dest.part" "$url" || return $? ;;
     curl) curl -sfLC - -o "$dest.part" "$url" || return $? ;;
     "")
       error "Could not find wget or curl"
@@ -439,18 +439,22 @@ download_package()
 }
 
 #
-# Executes a package install based on package type (rpm, deb, etc).
+# Checks if a package is already installed
 #
-install_p()
+is_installed()
 {
   local type="$1"
   local package="$2"
+
   case "$type" in
     rpm)
-      $sudo yum -y install "$package" || return $?
+      local package_data="$($sudo rpm -qp "$package")"
+      rpm --quiet -qi "$package_data"
+      return $?
       ;;
     deb)
-      $sudo dpkg -i "$package"
+      # FIXME
+      echo "not yet"
       ;;
     *)
       fail "Unknown package type $type: $package"
@@ -459,14 +463,42 @@ install_p()
 }
 
 #
-# Wraps install_p() with type and full path to the package
+# Executes a package install based on package type (rpm, deb, etc).
 #
-main_install()
+install_p()
+{
+  local type="$1"
+  local package="$2"
+
+  case "$type" in
+    rpm)
+      $sudo yum -y install "$package" || return $? ;;
+    deb)
+      $sudo apt-get install -y "$package" || return $? ;;
+    *)
+      fail "Unknown package type $type: $package"
+      ;;
+  esac
+}
+
+#
+# Call package manager to check if package is already installed 
+# If not, we do the actual install and log
+#
+do_install()
 {
   log "Installing $project $version from $package_filename"
-  install_p "$package_type" "$package_download_path/$package_filename" || return $?
-  log "Successfully installed $project $version from $package_filename"
+  is_installed "$package_type" "$package_download_path/$package_filename"
+  if [[ $? -eq 0 ]]; then
+    warn "Package manager reports it is already installed, skipping"
+  else
+    preinstall || return $?
+    install_p "$package_type" "$package_download_path/$package_filename" || return $?
+    postinstall || return $?
+    log "Successfully installed $project $version from $package_filename"
+  fi
 }
+
 
 #
 # Main script loop
@@ -491,8 +523,5 @@ if [[ ! $no_download -eq 1 ]]; then
   download_package || fail "Download of $url failed."
 fi
 
-preinstall || fail "Preinstall tasks failed."
-main_install || fail "Installation failed." 
-postinstall || fail "Postinstall tasks failed."
-
+do_install || fail "Installation failed." 
 
