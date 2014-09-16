@@ -32,6 +32,22 @@ if   command -v wget >/dev/null; then downloader="wget"
 elif command -v curl >/dev/null; then downloader="curl"
 fi
 
+#
+# Auto-detect the package manager and supported package types
+#
+if command -v apt-get >/dev/null; then 
+{
+  package_manager="apt"
+  extension="deb"
+  supported_extensions="$extension"
+}
+elif command -v yum >/dev/null; then
+{
+  package_manager="yum"
+  extension="rpm"
+  supported_extensions="$extension"
+}
+fi
 
 #
 # Prints a log message.
@@ -76,116 +92,6 @@ fail()
 {
   error "$*"
   exit -1
-}
-
-expand_url()
-{
-  local url="$1"
-  url="${url/\$\{platform\}/$platform}"
-  url="${url/\$\{release\}/$release}"
-  url="${url/\$\{arch\}/$arch}"
-  url="${url/\$\{project\}/$project}"
-  url="${url/\$\{version\}/$version}"
-  url="${url/\$\{platform_tag\}/$platform_tag}"
-  echo "$url"
-}
-
-#
-# Searches a file for a key and echos the value.
-# If the key cannot be found, the third argument will be echoed.
-# If the file is missing, ignore errors
-#
-fetch()
-{
-  local file="$1"
-  local key="$2"
-  local pair="$(grep -s -E "^$key:" "$file")"
-
-  echo "${pair##$key:*([[:space:]])}"
-}
-
-validate_project_file()
-{
-  local p="$1"
-  if [[ -s "$p" ]]; then
-    grep -q -E '^[-_\ a-zA-Z0-9]+:\ .*$' "$p" || return $?
-  else
-    # File does not exist or is zero-sized
-    return 1
-  fi
-}
-
-known_projects()
-{
-  local known_projects=()
-  for p in "$working_dir"/*; do
-    # A minimal project is a $url_file
-    validate_project_file "$p/$url_file" || continue
-    known_projects+=("$p")
-  done
-
-  if [[ ${#known_projects[@]} -eq 0 ]]; then
-    warn "No valid projects found."
-    return 0
-  fi
-
-  for p in "${known_projects[@]}"; do
-    echo "${p##*/}"
-    if [[ -f "$p/$version_file" ]]; then
-      echo "  Version aliases:"
-      cat "$p/$version_file" | sed 's/^/    /'
-    fi
-    if [[ -f "$p/$platform_file" ]]; then
-      echo "  Platform tags:"
-      cat "$p/$platform_file" | sed 's/^/    /'
-    fi
-    if [[ -f "$p/$url_file" ]]; then
-      echo "  Package URLs:"
-      cat "$p/$url_file" | sed 's/^/    /'
-    fi
-  done
-}
-
-#
-# Load and verify metadata from files and command line options. A minimal
-# project must provide the following
-#
-#   - $project from the command line
-#   - $version from the command line or $version_file
-#   - $url from the command line or $url_file
-#
-load_project()
-{
-  local expanded_version=$(fetch "$project_path/$version_file" "$version")
-  version="${expanded_version:-$version}"
-
-  # Read platform_tag from metadata or fall back to default_tag
-  local default_tag="$platform/$release/$arch"
-  local tag=$(fetch "$project_path/$platform_file" "$platform/$release/$arch")
-  platform_tag=${tag:-$default_tag}
-
-  # Read url from metadata file or command line
-  local url_value=$(fetch "$project_path/$url_file" "$platform_tag")
-  url_value=${url:-$url_value}
-  # Substitute any variables in url_value with expand_url()
-  url="$(expand_url $url_value)"
-  # If url is still a zero-length string we fail
-  if [[ -z "$url" ]]; then
-    error "Package download URL not set in project files or on the command line"
-    error "Please provide a $project/$url_file or use the -u option"
-    return 1
-  fi
-
-  # Assume last part of URL is the filename
-  package_filename="${url##*/}"
-  # Derive package type from file extension
-  package_type="${package_filename##*.}"
-  package_download_path="$project_path/$platform_tag"
-
-  # If scripts are not disabled, source $functions_file if it exists
-  if [[ -z $no_scripts && -f "$project_path/$functions_file" ]]; then
-    source "$project_path/$functions_file" || return $?
-  fi
 }
 
 #
@@ -254,6 +160,286 @@ detect_platform()
       release=$major_release
       ;;
   esac
+}
+
+#
+# Check if a file contains valid "key: value" pairs of data
+# This is just a simple sanity check and might blow up(!)
+#
+validate_project_file()
+{
+  local p="$1"
+  if [[ -s "$p" ]]; then
+    grep -q -E '^[-_\ a-zA-Z0-9]+:\ .*$' "$p" || return $?
+  else
+    # File does not exist or is zero-sized
+    return 1
+  fi
+}
+
+#
+# Searches $working_dir for projects by looking for subdirs that contains
+# a $url_file 
+#
+known_projects()
+{
+  local known_projects=()
+  for p in "$working_dir"/*; do
+    # A minimal project is a $url_file
+    validate_project_file "$p/$url_file" || continue
+    known_projects+=("$p")
+  done
+
+  if [[ ${#known_projects[@]} -eq 0 ]]; then
+    warn "No valid project subdirs found in current directory."
+    warn "A minimal project is [PROJECT_NAME]/$url_file or uses the -u option"
+    return 0
+  fi
+
+  for p in "${known_projects[@]}"; do
+    echo "${p##*/}"
+    if [[ -f "$p/$version_file" ]]; then
+      echo "  Version aliases:"
+      cat "$p/$version_file" | sed 's/^/    /'
+    fi
+    if [[ -f "$p/$platform_file" ]]; then
+      echo "  Platform tags:"
+      cat "$p/$platform_file" | sed 's/^/    /'
+    fi
+    if [[ -f "$p/$url_file" ]]; then
+      echo "  Package URLs:"
+      cat "$p/$url_file" | sed 's/^/    /'
+    fi
+  done
+}
+
+#
+# Mirrors remote project files from a location provided on the command line
+#
+mirror_project()
+{
+  local data_found=0
+
+  # Display remote and local paths, warn if local path already exists
+  # as we then skip downloading existing files
+  log "Mirroring remote project $project_mirror to $project_path"
+  mkdir -p "$project_path" || return $?
+
+  # Main project metadata download loop  
+  for dl in "$url_file" \
+            "$version_file" \
+            "$platform_file" \
+            "$functions_file" \
+            "$checksum_file" ; do
+    # Skip any files that already exits and set data_found=1
+    if [[ -s "$project_path/$dl" ]]; then
+      warn "$project_mirror/$dl -> $project/$dl: Filename already exists, skipping as OK"
+      data_found=1
+      continue
+    fi
+    # Try downloading
+    local dl_exit_code=$(download "$project_mirror/$dl" "$project_path")
+    # If we get a non-zero file log and set dl_ok
+    if [[ $dl_exit_code -eq 0 && -s "$project_path/$dl" ]]; then
+      log "$project_mirror/$dl -> $project/$dl: OK"
+      data_found=1
+    fi
+  done
+
+  # Fail if we didn't get any files
+  if [[ $data_found -eq 0 ]]; then
+    warn "Could not mirror, no data found."
+    return 1 
+  fi
+}
+
+#
+# Expands inline variables in URLs from $url_file or -u option to allow flexibility
+# Only non-quoted variables like ${var} will be expanded, see below
+#
+expand_url()
+{
+  local url="$1"
+  url="${url/\$\{platform\}/$platform}"
+  url="${url/\$\{release\}/$release}"
+  url="${url/\$\{arch\}/$arch}"
+  url="${url/\$\{project\}/$project}"
+  url="${url/\$\{version\}/$version}"
+  url="${url/\$\{platform_tag\}/$platform_tag}"
+  url="${url/\$\{extension\}/$extension}"
+  echo "$url"
+}
+
+#
+# Searches a file for a key and echos the value.
+# If the key cannot be found, the third argument will be echoed.
+# If the file is missing, ignore errors
+#
+fetch()
+{
+  local file="$1"
+  local key="$2"
+  local pair="$(grep -s -E "^$key:" "$file")"
+
+  echo "${pair##$key:*([[:space:]])}"
+}
+
+# Load and verify metadata from files and command line options. A minimal
+# project must provide the following
+#
+#   - $project from the command line
+#   - $version from the command line or $version_file
+#   - $url from the command line or $url_file
+#
+load_project()
+{
+  local expanded_version=$(fetch "$project_path/$version_file" "$version")
+  version="${expanded_version:-$version}"
+
+  # Read platform_tag from metadata or fall back to default_tag
+  local default_tag="$platform/$release/$arch"
+  local tag=$(fetch "$project_path/$platform_file" "$platform/$release/$arch")
+  platform_tag=${tag:-$default_tag}
+
+  # Read url from metadata file or command line
+  local url_value=$(fetch "$project_path/$url_file" "$platform_tag")
+  # If platform_tag url lookup is empty, fall back to "default"
+  url_value=$(fetch "$project_path/$url_file" "default")
+  # Override with command line option if it is non-empty
+  url_value=${url:-$url_value}
+  # Substitute any variables in url_value with expand_url()
+  url="$(expand_url $url_value)"
+  # If url is still a zero-length string we fail
+  if [[ -z "$url" ]]; then
+    error "Package download URL not set in project files or on the command line"
+    error "A minimal project is $project/$url_file or uses the -u option"
+    return 1
+  fi
+
+  # Assume last part of URL is the filename
+  filename="${url##*/}"
+  # Reassign extension variable with value derived from filename
+  extension="${filename##*.}"
+  package_download_path="$project_path/$platform_tag"
+
+  # Fail if package is not supported on this system
+  is_supported "$supported_extensions" "$extension" || return $?
+
+  # If scripts are not disabled, source $functions_file if it exists
+  if [[ -z $no_scripts && -f "$project_path/$functions_file" ]]; then
+    source "$project_path/$functions_file" || return $?
+  fi
+}
+
+#
+# Downloads a URL.
+#
+download()
+{
+  local url="$1"
+  local dest="$2"
+
+  [[ -d "$dest" ]] && dest="$dest/${url##*/}"
+  [[ -f "$dest" ]] && return
+
+  case "$downloader" in
+    wget) wget --progress=bar:force -c -O "$dest.part" "$url" || return $? ;;
+    curl) curl -sfLC - -o "$dest.part" "$url" || return $? ;;
+    "")
+      error "Could not find wget or curl"
+      return 1
+      ;;
+  esac
+
+  mv "$dest.part" "$dest" || return $?
+}
+
+#
+# Downloads a package.
+#
+download_package()
+{
+  log "Downloading package: $url"
+  mkdir -p "$package_download_path" || return $?
+  download "$url" "$package_download_path" || return $?
+}
+
+#
+# Checks if it is possible to install this package type
+#
+is_supported()
+{
+  local supp="$1"
+  local ext="$2"
+  if [[ $supp == *$ext* ]]; then
+    return 0
+  else
+    error "$ext packages are not supported on this system"
+    return 1
+  fi
+}
+
+#
+# Checks if a package is already installed
+#
+is_installed()
+{
+  local extension="$1"
+  local package="$2"
+
+  case "$extension" in
+    rpm)
+      local package_data="$($sudo rpm -qp "$package")"
+      [[ ! $? -eq 0 ]] && fail "Could not read data from $package"
+      $sudo rpm --quiet -qi "$package_data"
+      return $?
+      ;;
+    deb)
+      # FIXME
+      echo "FIXME not yet implemented"
+      return 0
+      ;;
+    *)
+      fail "Unknown package type $type: $package"
+      ;;
+  esac
+}
+
+#
+# Executes a package install based on package type (rpm, deb, etc).
+#
+install_p()
+{
+  local ext="$1"
+  local package="$2"
+
+  case "$ext" in
+    rpm)
+      $sudo yum -y install "$package" || return $? ;;
+    deb)
+      $sudo apt-get install -y "$package" || return $? ;;
+    *)
+      fail "Sorry, no support for installing $ext packages"
+      ;;
+  esac
+}
+
+#
+# Call package manager to check if package is already installed 
+# If not, we do the actual install and log
+#
+do_install()
+{
+  log "Installing $project $version from $filename"
+  is_installed "$extension" "$package_download_path/$filename"
+  if [[ $? -eq 0 ]]; then
+    warn "Package manager reports it is already installed, skipping"
+  else
+    preinstall || return $?
+    install_p "$extension" "$package_download_path/$filename" || return $?
+    postinstall || return $?
+    log "Successfully installed $project $version from $filename"
+  fi
 }
 
 #
@@ -365,140 +551,6 @@ parse_options()
   esac
 }
 
-#
-# Downloads a URL.
-#
-download()
-{
-  local url="$1"
-  local dest="$2"
-
-  [[ -d "$dest" ]] && dest="$dest/${url##*/}"
-  [[ -f "$dest" ]] && return
-
-  case "$downloader" in
-    wget) wget --progress=bar:force -c -O "$dest.part" "$url" || return $? ;;
-    curl) curl -sfLC - -o "$dest.part" "$url" || return $? ;;
-    "")
-      error "Could not find wget or curl"
-      return 1
-      ;;
-  esac
-
-  mv "$dest.part" "$dest" || return $?
-}
-
-#
-# Mirrors project files
-#
-mirror_project()
-{
-  local data_found=0
-
-  # Display remote and local paths, warn if local path already exists
-  # as we then skip downloading existing files
-  log "Mirroring remote project $project_mirror to $project_path"
-  mkdir -p "$project_path" || return $?
-
-  # Main project metadata download loop  
-  for dl in "$url_file" \
-            "$version_file" \
-            "$platform_file" \
-            "$functions_file" \
-            "$checksum_file" ; do
-    # Skip any files that already exits and set data_found=1
-    if [[ -s "$project_path/$dl" ]]; then
-      warn "$project_mirror/$dl -> $project/$dl: File already exists, skipping as OK"
-      data_found=1
-      continue
-    fi
-    # Try downloading
-    local dl_exit_code=$(download "$project_mirror/$dl" "$project_path")
-    # If we get a non-zero file log and set dl_ok
-    if [[ $dl_exit_code -eq 0 && -s "$project_path/$dl" ]]; then
-      log "$project_mirror/$dl -> $project/$dl: OK"
-      data_found=1
-    fi
-  done
-
-  # Fail if we didn't get any files
-  if [[ $data_found -eq 0 ]]; then
-    warn "Could not mirror, no data found."
-    return 1 
-  fi
-}
-
-#
-# Downloads a package.
-#
-download_package()
-{
-  log "Downloading package: $url"
-  mkdir -p "$package_download_path" || return $?
-  download "$url" "$package_download_path" || return $?
-}
-
-#
-# Checks if a package is already installed
-#
-is_installed()
-{
-  local type="$1"
-  local package="$2"
-
-  case "$type" in
-    rpm)
-      local package_data="$($sudo rpm -qp "$package")"
-      rpm --quiet -qi "$package_data"
-      return $?
-      ;;
-    deb)
-      # FIXME
-      echo "not yet"
-      ;;
-    *)
-      fail "Unknown package type $type: $package"
-      ;;
-  esac
-}
-
-#
-# Executes a package install based on package type (rpm, deb, etc).
-#
-install_p()
-{
-  local type="$1"
-  local package="$2"
-
-  case "$type" in
-    rpm)
-      $sudo yum -y install "$package" || return $? ;;
-    deb)
-      $sudo apt-get install -y "$package" || return $? ;;
-    *)
-      fail "Unknown package type $type: $package"
-      ;;
-  esac
-}
-
-#
-# Call package manager to check if package is already installed 
-# If not, we do the actual install and log
-#
-do_install()
-{
-  log "Installing $project $version from $package_filename"
-  is_installed "$package_type" "$package_download_path/$package_filename"
-  if [[ $? -eq 0 ]]; then
-    warn "Package manager reports it is already installed, skipping"
-  else
-    preinstall || return $?
-    install_p "$package_type" "$package_download_path/$package_filename" || return $?
-    postinstall || return $?
-    log "Successfully installed $project $version from $package_filename"
-  fi
-}
-
 
 #
 # Main script loop
@@ -520,7 +572,7 @@ fi
 load_project || fail "Could not load project: $project"
 
 if [[ ! $no_download -eq 1 ]]; then
-  download_package || fail "Download of $url failed."
+  download_package || fail "Package download failed."
 fi
 
 do_install || fail "Installation failed." 
