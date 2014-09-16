@@ -33,20 +33,23 @@ elif command -v curl >/dev/null; then downloader="curl"
 fi
 
 #
+# Auto-detect checksum verification util
+#
+if   command -v sha256sum >/dev/null; then verifier="sha256sum"
+elif command -v shasum >/dev/null;    then verifier="shasum -a 256"
+fi
+
+#
 # Auto-detect the package manager and supported package types
 #
 if command -v apt-get >/dev/null; then 
-{
   package_manager="apt"
   extension="deb"
   supported_extensions="$extension"
-}
 elif command -v yum >/dev/null; then
-{
   package_manager="yum"
   extension="rpm"
   supported_extensions="$extension"
-}
 fi
 
 #
@@ -325,6 +328,21 @@ load_project()
   # Fail if package is not supported on this system
   is_supported "$supported_extensions" "$extension" || return $?
 
+  # Read checksum from metadata file
+  local checksum_value=$(fetch "$project_path/$checksum_file" "$filename")
+  # Make it possible to override checksum from the command line
+  checksum=${checksum:-$checksum_value}
+  # Fail if we require a checksum and it is empty
+  if [[ -z "$checksum" ]]; then
+    if [[ $no_verify -eq 0 ]]; then
+      error "No checksum found in project files or on the commmand line"
+      error "To skip verification specify --no-verify (not recommended!)"
+      return 1
+    else
+      warn "File verification skipped! Assuming no evil."
+    fi
+  fi
+
   # If scripts are not disabled, source $functions_file if it exists
   if [[ -z $no_scripts && -f "$project_path/$functions_file" ]]; then
     source "$project_path/$functions_file" || return $?
@@ -362,6 +380,41 @@ download_package()
   log "Downloading package: $url"
   mkdir -p "$package_download_path" || return $?
   download "$url" "$package_download_path" || return $?
+}
+
+#
+# Verify a file using a SHA256 checksum
+# Why SHA256? I guess just because, I don't know :)
+#
+verify()
+{
+  local path="$1"
+  local checksum="$2"
+
+  if [[ -z "$verifier" ]]; then
+    error "Unable to find the checksum utility"
+    return 1
+  fi
+
+  if [[ -z "$checksum" ]]; then
+    error "No checksum given"
+    return 1
+  fi
+
+  if [[ ! "$($verifier "$path")" =~ ^$checksum\  ]]; then
+    error "$path is invalid!"
+    return 1
+  else
+    log "File checksum verified OK."
+  fi
+}
+
+#
+# Verify downloaded package
+#
+verify_package()
+{
+  verify "$package_download_path/$filename" "$checksum"
 }
 
 #
@@ -433,7 +486,7 @@ do_install()
   log "Installing $project $version from $filename"
   is_installed "$extension" "$package_download_path/$filename"
   if [[ $? -eq 0 ]]; then
-    warn "Package manager reports it is already installed, skipping"
+    warn "Package manager reports it as already installed, skipping"
   else
     preinstall || return $?
     install_p "$extension" "$package_download_path/$filename" || return $?
@@ -493,7 +546,7 @@ parse_options()
         shift 2
         ;;
       -s|--sha256)
-        package_sha256="$2"
+        checksum="$2"
         shift 2
         ;;
       --no-download)
@@ -573,6 +626,10 @@ load_project || fail "Could not load project: $project"
 
 if [[ ! $no_download -eq 1 ]]; then
   download_package || fail "Package download failed."
+fi
+
+if [[ ! $no_verify -eq 1 ]]; then
+  verify_package || fail "Package checksum verification failed."
 fi
 
 do_install || fail "Installation failed." 
