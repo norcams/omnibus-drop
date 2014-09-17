@@ -6,6 +6,9 @@ ver="0.1.0"
 working_dir="$PWD"
 source_dir="${BASH_SOURCE[0]%/*}"
 
+#
+# Project metadata filenames
+#
 url_file="url.txt"
 version_file="version.txt"
 platform_file="platform.txt"
