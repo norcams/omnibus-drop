@@ -260,20 +260,20 @@ mirror_project()
 }
 
 #
-# Expands inline variables in URLs from $url_file or -u option to allow flexibility
+# Expand script variables inline to allow flexibility in URLs and paths
 # Only non-quoted variables like ${var} will be expanded, see below
 #
-expand_url()
+expand_string()
 {
-  local url="$1"
-  url="${url/\$\{platform\}/$platform}"
-  url="${url/\$\{release\}/$release}"
-  url="${url/\$\{arch\}/$arch}"
-  url="${url/\$\{project\}/$project}"
-  url="${url/\$\{version\}/$version}"
-  url="${url/\$\{platform_tag\}/$platform_tag}"
-  url="${url/\$\{package_format\}/$package_format}"
-  echo "$url"
+  local string="$1"
+  string="${string/\$\{platform\}/$platform}"
+  string="${string/\$\{release\}/$release}"
+  string="${string/\$\{arch\}/$arch}"
+  string="${string/\$\{project\}/$project}"
+  string="${string/\$\{version\}/$version}"
+  string="${string/\$\{platform_tag\}/$platform_tag}"
+  string="${string/\$\{package_format\}/$package_format}"
+  echo "$string"
 }
 
 #
@@ -295,17 +295,17 @@ fetch()
 #
 #   - $project from the command line
 #   - $version from the command line or $version_file
-#   - $url from the command line or $url_file
+#   - $url from the command line or $url_file OR a package in $package_dir
 #
 load_project()
 {
   local expanded_version="$(fetch "$project_path/$version_file" "$version")"
   version="${expanded_version:-$version}"
 
-  # Read platform_tag from metadata or fall back to default_tag
-  local default_tag="$platform/$release/$arch"
-  local tag="$(fetch "$project_path/$platform_file" "$platform/$release/$arch")"
-  platform_tag="${tag:-$default_tag}"
+  # Read platform_tag from metadata or fall back to tag_default
+  local tag_default="$platform/$release/$arch"
+  local tag_value="$(fetch "$project_path/$platform_file" "$platform/$release/$arch")"
+  platform_tag="${tag_value:-$tag_default}"
 
   # Read url from metadata file or command line
   local url_value="$(fetch "$project_path/$url_file" "$platform_tag")"
@@ -314,20 +314,25 @@ load_project()
   url_value="${url_value:-$url_default}"
   # Override with command line option if it is non-empty
   url_value="${url:-$url_value}"
-  # Substitute any variables in url_value with expand_url()
-  url="$(expand_url $url_value)"
+  # Expand any inline variables in url_value
+  url="$(expand_string $url_value)"
   # If url is still a zero-length string we fail
   if [[ -z "$url" ]]; then
-    error "Package download URL not set in project files or on the command line"
-    error "A minimal project is $project/$url_file or uses the -u option"
-    return 1
+    warn "No URL found, skipping package download."
+    no_download=1
   fi
+
+  # Set default package_dir
+  local package_dir_default="$project_path/$platform_tag"
+  # Set value to default or command line option if it is non-empty
+  local package_dir_value="${package_dir:-$package_dir_default}"
+  # Expand any inline variables and set final package_dir
+  package_dir="$(expand_string $package_dir_value)"
 
   # Assume last part of URL is the filename
   filename="${url##*/}"
   # Reassign package_format variable with value derived from filename
   package_format="${filename##*.}"
-  package_download_path="$project_path/$platform_tag"
 
   # Fail if package is not supported on this system
   is_supported "$supported_formats" "$package_format" || return $?
@@ -339,8 +344,8 @@ load_project()
   # Fail if we require a checksum and it is empty
   if [[ -z "$checksum" ]]; then
     if [[ $no_verify -eq 0 ]]; then
-      error "No checksum found in project files or on the commmand line"
-      error "To skip verification specify --no-verify (not recommended!)"
+      error "No checksum found. Can't verify package."
+      error "Skip verification with --no-verify (not recommended!)"
       return 1
     else
       warn "File verification skipped! Assuming no evil."
@@ -382,8 +387,8 @@ download()
 download_package()
 {
   log "Downloading package: $url"
-  mkdir -p "$package_download_path" || return $?
-  download "$url" "$package_download_path" || return $?
+  mkdir -p "$package_dir" || return $?
+  download "$url" "$package_dir" || return $?
 }
 
 #
@@ -419,7 +424,7 @@ verify()
 #
 verify_package()
 {
-  verify "$package_download_path/$filename" "$checksum"
+  verify "$package_dir/$filename" "$checksum"
 }
 
 #
@@ -488,13 +493,13 @@ install_p()
 #
 install_package()
 {
-  log "Installing $project $version from $filename"
-  is_installed "$package_format" "$package_download_path/$filename"
+  log "Installing $project $version from $package_dir/$filename"
+  is_installed "$package_format" "$package_dir/$filename"
   if [[ $? -eq 0 ]]; then
     warn "Package manager reports it as already installed, skipping"
   else
     preinstall || return $?
-    install_p "$package_format" "$package_download_path/$filename" || return $?
+    install_p "$package_format" "$package_dir/$filename" || return $?
     postinstall || return $?
     log "Successfully installed $project $version from $filename"
   fi
@@ -510,12 +515,12 @@ usage: omnibus-drop [OPTIONS] [PROJECT [VERSION]]
 
 Options:
 
-    -d, --dest-dir DIR     Directory to download package into
-    -M, --mirror URL       Alternate mirror to download project metadata from
+    -d, --package-dir DIR  Path to local package directory
+    -M, --mirror URL       Mirror project metadata using URL as base
     -u, --url URL          Alternate URL to download the package from
     -s, --sha256 SHA256    Checksum of the package
-    --no-download          Use a previously downloaded package
-    --no-verify            Do not verify the downloaded package
+    --no-download          Do not download any package
+    --no-verify            Do not verify the package before installing
     --no-scripts           Do not load functions.sh when installing
     -V, --version          Prints the version
     -h, --help             Prints this message
@@ -538,8 +543,8 @@ parse_options()
 
   while [[ $# -gt 0 ]]; do
     case $1 in
-      -d|--dest-dir)
-        src_dir="$2"
+      -d|--package-dir)
+        package_dir="$2"
         shift 2
         ;;
       -M|--mirror)
