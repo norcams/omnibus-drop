@@ -43,13 +43,13 @@ fi
 # Auto-detect the package manager and supported package types
 #
 if command -v apt-get >/dev/null; then 
-  package_manager="apt"
-  extension="deb"
-  supported_extensions="$extension"
+  package_manager_command="DEBIAN_FRONTEND=noninteractive apt-get install"
+  package_format="deb"
+  supported_formats="$package_format"
 elif command -v yum >/dev/null; then
-  package_manager="yum"
-  extension="rpm"
-  supported_extensions="$extension"
+  package_manager_command="yum -y install"
+  package_format="rpm"
+  supported_formats="$package_format"
 fi
 
 #
@@ -269,7 +269,7 @@ expand_url()
   url="${url/\$\{project\}/$project}"
   url="${url/\$\{version\}/$version}"
   url="${url/\$\{platform_tag\}/$platform_tag}"
-  url="${url/\$\{extension\}/$extension}"
+  url="${url/\$\{package_format\}/$package_format}"
   echo "$url"
 }
 
@@ -296,20 +296,21 @@ fetch()
 #
 load_project()
 {
-  local expanded_version=$(fetch "$project_path/$version_file" "$version")
+  local expanded_version="$(fetch "$project_path/$version_file" "$version")"
   version="${expanded_version:-$version}"
 
   # Read platform_tag from metadata or fall back to default_tag
   local default_tag="$platform/$release/$arch"
-  local tag=$(fetch "$project_path/$platform_file" "$platform/$release/$arch")
-  platform_tag=${tag:-$default_tag}
+  local tag="$(fetch "$project_path/$platform_file" "$platform/$release/$arch")"
+  platform_tag="${tag:-$default_tag}"
 
   # Read url from metadata file or command line
-  local url_value=$(fetch "$project_path/$url_file" "$platform_tag")
+  local url_value="$(fetch "$project_path/$url_file" "$platform_tag")"
   # If platform_tag url lookup is empty, fall back to "default"
-  url_value=$(fetch "$project_path/$url_file" "default")
+  url_default="$(fetch "$project_path/$url_file" "default")"
+  url_value="${url_value:-$url_default}"
   # Override with command line option if it is non-empty
-  url_value=${url:-$url_value}
+  url_value="${url:-$url_value}"
   # Substitute any variables in url_value with expand_url()
   url="$(expand_url $url_value)"
   # If url is still a zero-length string we fail
@@ -321,17 +322,17 @@ load_project()
 
   # Assume last part of URL is the filename
   filename="${url##*/}"
-  # Reassign extension variable with value derived from filename
-  extension="${filename##*.}"
+  # Reassign package_format variable with value derived from filename
+  package_format="${filename##*.}"
   package_download_path="$project_path/$platform_tag"
 
   # Fail if package is not supported on this system
-  is_supported "$supported_extensions" "$extension" || return $?
+  is_supported "$supported_formats" "$package_format" || return $?
 
   # Read checksum from metadata file
-  local checksum_value=$(fetch "$project_path/$checksum_file" "$filename")
+  local checksum_value="$(fetch "$project_path/$checksum_file" "$filename")"
   # Make it possible to override checksum from the command line
-  checksum=${checksum:-$checksum_value}
+  checksum="${checksum:-$checksum_value}"
   # Fail if we require a checksum and it is empty
   if [[ -z "$checksum" ]]; then
     if [[ $no_verify -eq 0 ]]; then
@@ -437,10 +438,10 @@ is_supported()
 #
 is_installed()
 {
-  local extension="$1"
+  local format="$1"
   local package="$2"
 
-  case "$extension" in
+  case "$format" in
     rpm)
       local package_data="$($sudo rpm -qp "$package")"
       [[ ! $? -eq 0 ]] && fail "Could not read data from $package"
@@ -459,20 +460,18 @@ is_installed()
 }
 
 #
-# Executes a package install based on package type (rpm, deb, etc).
+# Executes a package install based on package type and what package manager was .
 #
 install_p()
 {
-  local ext="$1"
+  local format="$1"
   local package="$2"
 
-  case "$ext" in
-    rpm)
-      $sudo yum -y install "$package" || return $? ;;
-    deb)
-      $sudo apt-get install -y "$package" || return $? ;;
+  case "$format" in
+    rpms|deb)
+      $sudo "$package_manager_command" "$package" || return $? ;;
     *)
-      fail "Sorry, no support for installing $ext packages"
+      fail "Sorry, no support for \"$format\" packages"
       ;;
   esac
 }
@@ -481,15 +480,15 @@ install_p()
 # Call package manager to check if package is already installed 
 # If not, we do the actual install and log
 #
-do_install()
+install_package()
 {
   log "Installing $project $version from $filename"
-  is_installed "$extension" "$package_download_path/$filename"
+  is_installed "$package_format" "$package_download_path/$filename"
   if [[ $? -eq 0 ]]; then
     warn "Package manager reports it as already installed, skipping"
   else
     preinstall || return $?
-    install_p "$extension" "$package_download_path/$filename" || return $?
+    install_p "$package_format" "$package_download_path/$filename" || return $?
     postinstall || return $?
     log "Successfully installed $project $version from $filename"
   fi
@@ -632,5 +631,5 @@ if [[ ! $no_verify -eq 1 ]]; then
   verify_package || fail "Package checksum verification failed."
 fi
 
-do_install || fail "Installation failed." 
+install_package || fail "Installation failed." 
 
