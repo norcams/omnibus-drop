@@ -402,7 +402,8 @@ verify()
     return 1
   fi
 
-  if [[ ! "$($verifier "$path")" =~ ^$checksum\  ]]; then
+  local match='^'$checksum'\ '
+  if [[ ! "$($verifier "$path")" =~ $match ]]; then
     error "$path is invalid!"
     return 1
   else
@@ -424,12 +425,14 @@ verify_package()
 is_supported()
 {
   local supp="$1"
-  local ext="$2"
-  if [[ $supp == *$ext* ]]; then
-    return 0
-  else
-    error "$ext packages are not supported on this system"
+  local fmt="$2"
+
+  local match='(^|\ )'$fmt'(\ |$)'
+  if [[ ! $supp =~ $match ]]; then
+    error "$fmt packages are not supported on this system"
     return 1
+  else
+    return 0
   fi
 }
 
@@ -450,7 +453,7 @@ is_installed()
       ;;
     deb)
       # FIXME
-      echo "FIXME not yet implemented"
+      echo "FIXME deb is_installed() not yet implemented"
       return 0
       ;;
     *)
@@ -468,10 +471,10 @@ install_p()
   local package="$2"
 
   case "$format" in
-    rpms|deb)
-      $sudo "$package_manager_command" "$package" || return $? ;;
+    rpm|deb)
+      $sudo $package_manager_command "$package" || return $? ;;
     *)
-      fail "Sorry, no support for \"$format\" packages"
+      fail "Sorry, no support yet(?) for "$format" packages"
       ;;
   esac
 }
