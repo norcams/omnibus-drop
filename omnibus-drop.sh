@@ -7,11 +7,12 @@ working_dir="$PWD"
 source_dir="${BASH_SOURCE[0]%/*}"
 
 #
-# Project metadata filenames
+# Project data filenames
 #
-url_file="url.txt"
-version_file="version.txt"
-platform_file="platform.txt"
+url_file="urls.txt"
+version_file="versions.txt"
+platform_file="platforms.txt"
+package_file="packages.txt"
 functions_file="functions.sh"
 checksum_file="sha256.txt"
 
@@ -166,21 +167,37 @@ detect_platform()
       release=$major_release
       ;;
   esac
+
+  # Remap x86_64 to amd64 for platforms that use deb
+  if [[ "$package_format" == "deb" ]]; then
+    arch="${arch/x86_64/amd64}"
+  fi
 }
 
 #
-# Check if a file contains valid "key: value" pairs of data
+# Check if a dir contains any project files with any "key: value" pairs
 # This is just a simple sanity check and might blow up(!)
 #
-validate_project_file()
+validate_project()
 {
   local p="$1"
-  if [[ -s "$p" ]]; then
-    grep -q -E '^[-_\ a-zA-Z0-9]+:\ .*$' "$p" || return $?
-  else
-    # File does not exist or is zero-sized
-    return 1
+  local valid=1
+  if [[ -d "$p" ]]; then
+    for f in "$url_file" \
+             "$version_file" \
+             "$platform_file" \
+             "$checksum_file" \
+             "$package_file"; do
+      if [[ -s "$p/$f" ]]; then
+        if grep -q -E '^[-_\.\ \/a-zA-Z0-9]+:\ .*$' "$p/$f"; then
+          valid=0
+        else
+          fail "$p/$f does not contain valid data."
+        fi
+      fi
+    done
   fi
+  return $valid
 }
 
 #
@@ -191,14 +208,12 @@ known_projects()
 {
   local known_projects=()
   for p in "$working_dir"/*; do
-    # A minimal project is a $url_file
-    validate_project_file "$p/$url_file" || continue
+    validate_project "$p" || continue
     known_projects+=("$p")
   done
 
   if [[ ${#known_projects[@]} -eq 0 ]]; then
-    warn "No valid project subdirs found in current directory."
-    warn "A minimal project is [PROJECT_NAME]/$url_file or uses the -u option"
+    warn "No valid project data found."
     return 0
   fi
 
@@ -212,8 +227,12 @@ known_projects()
       echo "  Platform tags:"
       cat "$p/$platform_file" | sed 's/^/    /'
     fi
+     if [[ -f "$p/$package_file" ]]; then
+      echo "  Local source paths:"
+      cat "$p/$package_file" | sed 's/^/    /'
+    fi
     if [[ -f "$p/$url_file" ]]; then
-      echo "  Package URLs:"
+      echo "  Remote download URLs:"
       cat "$p/$url_file" | sed 's/^/    /'
     fi
   done
@@ -228,25 +247,25 @@ mirror_project()
 
   # Display remote and local paths, warn if local path already exists
   # as we then skip downloading existing files
-  log "Mirroring remote project $project_mirror to $project_path"
-  mkdir -p "$project_path" || return $?
+  log "Mirroring remote project $project_mirror to $projectdir"
+  mkdir -p "$projectdir" || return $?
 
-  # Main project metadata download loop  
+  # Main project /data download loop  
   for dl in "$url_file" \
             "$version_file" \
             "$platform_file" \
             "$functions_file" \
             "$checksum_file" ; do
     # Skip any files that already exits and set data_found=1
-    if [[ -s "$project_path/$dl" ]]; then
+    if [[ -s "$projectdir/$dl" ]]; then
       warn "$project_mirror/$dl -> $project/$dl: Filename already exists, skipping as OK"
       data_found=1
       continue
     fi
     # Try downloading
-    local dl_exit_code=$(download "$project_mirror/$dl" "$project_path")
+    local dl_exit_code=$(download "$project_mirror/$dl" "$projectdir")
     # If we get a non-zero file log and set dl_ok
-    if [[ $dl_exit_code -eq 0 && -s "$project_path/$dl" ]]; then
+    if [[ $dl_exit_code -eq 0 && -s "$projectdir/$dl" ]]; then
       log "$project_mirror/$dl -> $project/$dl: OK"
       data_found=1
     fi
@@ -290,71 +309,61 @@ fetch()
   echo "${pair##$key:*([[:space:]])}"
 }
 
-# Load and verify metadata from files and command line options. A minimal
-# project must provide the following
 #
-#   - $project from the command line
-#   - $version from the command line or $version_file
-#   - $url from the command line or $url_file OR a package in $package_dir
+# Load and verify data from files and command line options.
 #
 load_project()
 {
-  local expanded_version="$(fetch "$project_path/$version_file" "$version")"
-  version="${expanded_version:-$version}"
+  # Set default project data
 
-  # Read platform_tag from metadata or fall back to tag_default
-  local tag_default="$platform/$release/$arch"
-  local tag_value="$(fetch "$project_path/$platform_file" "$platform/$release/$arch")"
-  platform_tag="${tag_value:-$tag_default}"
+  # Set default values and read data from project files
+  # Override with command line values if set
+  local version_default=stable
+  local version_value="$(fetch "$projectdir/$version_file" "$version")"
+  version_value="${version_value:-$version_default}"
+  version="${version_value:-$version}"
 
-  # Read url from metadata file or command line
-  local url_value="$(fetch "$project_path/$url_file" "$platform_tag")"
-  # If platform_tag url lookup is empty, fall back to "default"
-  url_default="$(fetch "$project_path/$url_file" "default")"
-  url_value="${url_value:-$url_default}"
-  # Override with command line option if it is non-empty
+  local platform_tag_default="$platform/$release/$arch"
+  local platform_tag_value="$(fetch "$projectdir/$platform_file" "$platform/$release/$arch")"
+  platform_tag="${platform_tag_value:-$platform_tag_default}"
+
+  local url_default=
+  local url_value="$(fetch "$projectdir/$url_file" "$platform_tag")"
   url_value="${url:-$url_value}"
-  # Expand any inline variables in url_value
   url="$(expand_string $url_value)"
-  # If url is still a zero-length string we fail
+
+  local packagedir_default="$projectdir/packages/$platform_tag"
+  local packagedir_value="${packagedir:-$packagedir_default}"
+  packagedir="$(expand_string $packagedir_value)"
+
+  local filename_default="$project-$version.$arch.$package_format"
+  local filename_value="$(fetch "$projectdir/$package_file" "$platform_tag")"
+  filename_value="${filename:-$filename_value}"
+  filename="$(expand_string $filename_value)"
+
+  local checksum_value="$(fetch "$projectdir/$checksum_file" "$filename")"
+  checksum="${checksum:-$checksum_value}"
+
+  # Warn if url is empty and auto-skip downloading
   if [[ -z "$url" ]]; then
     warn "No URL found, skipping package download."
     no_download=1
   fi
 
-  # Set default package_dir
-  local package_dir_default="$project_path/$platform_tag"
-  # Set value to default or command line option if it is non-empty
-  local package_dir_value="${package_dir:-$package_dir_default}"
-  # Expand any inline variables and set final package_dir
-  package_dir="$(expand_string $package_dir_value)"
-
-  # Assume last part of URL is the filename
-  filename="${url##*/}"
-  # Reassign package_format variable with value derived from filename
-  package_format="${filename##*.}"
-
   # Fail if package is not supported on this system
   is_supported "$supported_formats" "$package_format" || return $?
 
-  # Read checksum from metadata file
-  local checksum_value="$(fetch "$project_path/$checksum_file" "$filename")"
-  # Make it possible to override checksum from the command line
-  checksum="${checksum:-$checksum_value}"
-  # Fail if we require a checksum and it is empty
-  if [[ -z "$checksum" ]]; then
-    if [[ $no_verify -eq 0 ]]; then
-      error "No checksum found. Can't verify package."
-      error "Skip verification with --no-verify (not recommended!)"
-      return 1
-    else
-      warn "File verification skipped! Assuming no evil."
-    fi
+  # Warn if we skip file verification, error if required and empty
+  if [[ $no_verify -eq 1 ]]; then
+    warn "Package checksum verification disabled! Assuming no evil."
+  elif [[ $no_verify -eq 0 && -z "$checksum" ]]; then
+    error "No checksum found. Can't verify $package"
+    return 1
   fi
 
-  # If scripts are not disabled, source $functions_file if it exists
-  if [[ -z $no_scripts && -f "$project_path/$functions_file" ]]; then
-    source "$project_path/$functions_file" || return $?
+  # If scripts are enabled source $functions_file if it exists
+  if [[ -z $no_scripts && -f "$projectdir/$functions_file" ]]; then
+    source "$projectdir/$functions_file" || return $?
   fi
 }
 
@@ -387,8 +396,8 @@ download()
 download_package()
 {
   log "Downloading package: $url"
-  mkdir -p "$package_dir" || return $?
-  download "$url" "$package_dir" || return $?
+  mkdir -p "$packagedir" || return $?
+  download "$url" "$packagedir" || return $?
 }
 
 #
@@ -424,7 +433,7 @@ verify()
 #
 verify_package()
 {
-  verify "$package_dir/$filename" "$checksum"
+  verify "$packagedir/$filename" "$checksum"
 }
 
 #
@@ -493,13 +502,13 @@ install_p()
 #
 install_package()
 {
-  log "Installing $project $version from $package_dir/$filename"
-  is_installed "$package_format" "$package_dir/$filename"
+  log "Installing $project $version from $packagedir/$filename"
+  is_installed "$package_format" "$packagedir/$filename"
   if [[ $? -eq 0 ]]; then
     warn "Package manager reports it as already installed, skipping"
   else
     preinstall || return $?
-    install_p "$package_format" "$package_dir/$filename" || return $?
+    install_p "$package_format" "$packagedir/$filename" || return $?
     postinstall || return $?
     log "Successfully installed $project $version from $filename"
   fi
@@ -516,7 +525,7 @@ usage: omnibus-drop [OPTIONS] [PROJECT [VERSION]]
 Options:
 
     -d, --package-dir DIR  Path to local package directory
-    -M, --mirror URL       Mirror project metadata using URL as base
+    -M, --mirror URL       Mirror project data using URL as base
     -u, --url URL          Alternate URL to download the package from
     -s, --sha256 SHA256    Checksum of the package
     --no-download          Do not download any package
@@ -543,8 +552,12 @@ parse_options()
 
   while [[ $# -gt 0 ]]; do
     case $1 in
-      -d|--package-dir)
-        package_dir="$2"
+       -f|--filename)
+        filename="$2"
+        shift 2
+        ;;
+      -d|--directory)
+        packagedir="$2"
         shift 2
         ;;
       -M|--mirror)
@@ -593,12 +606,12 @@ parse_options()
   case ${#argv[*]} in
     2)
       project="${argv[0]}"
-      project_path="$working_dir/$project"
+      projectdir="$working_dir/$project"
       version="${argv[1]}"
       ;;
     1)
       project="${argv[0]}"
-      project_path="$working_dir/$project"
+      projectdir="$working_dir/$project"
       version="stable"
       ;;
     0)
@@ -618,7 +631,7 @@ parse_options()
 #
 # Main script loop
 #
-detect_platform || exit $?
+detect_platform || fail "Could not detect platform."
 
 if [[ $# -eq 0 ]]; then
   log "omnibus-drop v${ver} platform=$platform release=$release arch=$arch"
