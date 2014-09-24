@@ -103,6 +103,7 @@ fail()
 
 #
 # Detects OS and sets $platform, $release and $arch
+# Adopted from opscode/opscode-omnitruck
 #
 detect_platform()
 {
