@@ -30,27 +30,40 @@ else                     sudo="sudo"
 fi
 
 #
+# Check whether a command exists - returns 0 if it does, 1 if it does not
+#
+exists() {
+    local cmd="$1"
+    if command -v $cmd >/dev/null 2>&1
+    then
+        return 0
+    else
+        return 1
+    fi
+}
+
+#
 # Auto-detect the downloader.
 #
-if   command -v wget >/dev/null; then downloader="wget"
-elif command -v curl >/dev/null; then downloader="curl"
+if   exists "wget"; then downloader="wget"
+elif exists "curl"; then downloader="curl"
 fi
 
 #
 # Auto-detect checksum verification util
 #
-if   command -v sha256sum >/dev/null; then verifier="sha256sum"
-elif command -v shasum >/dev/null;    then verifier="shasum -a 256"
+if   exists "sha256sum"; then verifier="sha256sum"
+elif exists "shasum";    then verifier="shasum -a 256"
 fi
 
 #
 # Auto-detect the package manager and supported package types
 #
-if command -v apt-get >/dev/null; then 
-  package_manager_command="DEBIAN_FRONTEND=noninteractive apt-get install"
+if exists "apt-get"; then
+  package_manager_command="apt-get install"
   package_format="deb"
   supported_formats="$package_format"
-elif command -v yum >/dev/null; then
+elif exists "yum"; then
   package_manager_command="yum -y install"
   package_format="rpm"
   supported_formats="$package_format"
@@ -339,7 +352,8 @@ load_project()
 
   local filename_default="$project-$version.$arch.$package_format"
   local filename_value="$(fetch "$projectdir/$package_file" "$platform_tag")"
-  filename_value="${filename:-$filename_value}"
+  filename_value="${filename_value:-$filename_default}"
+  filename="${filename_value:-$filename}"
   filename="$(expand_string $filename_value)"
 
   local checksum_value="$(fetch "$projectdir/$checksum_file" "$filename")"
@@ -358,7 +372,7 @@ load_project()
   if [[ $no_verify -eq 1 ]]; then
     warn "Package checksum verification disabled! Assuming no evil."
   elif [[ $no_verify -eq 0 && -z "$checksum" ]]; then
-    error "No checksum found. Can't verify $package"
+    error "No checksum found. Can't verify $filename"
     return 1
   fi
 
@@ -398,12 +412,11 @@ download_package()
 {
   log "Downloading package: $url"
   mkdir -p "$packagedir" || return $?
-  download "$url" "$packagedir" || return $?
+  download "$url" "$packagedir/$filename" || return $?
 }
 
 #
 # Verify a file using a SHA256 checksum
-# Why SHA256? I guess just because, I don't know :)
 #
 verify()
 {
@@ -465,14 +478,14 @@ is_installed()
   case "$format" in
     rpm)
       local package_data="$($sudo rpm -qp "$package")"
-      [[ ! $? -eq 0 ]] && fail "Could not read data from $package"
+      [[ ! $? -eq 0 ]] && fail "Error while querying $package"
       $sudo rpm --quiet -qi "$package_data"
       return $?
       ;;
     deb)
       # FIXME
       echo "FIXME deb is_installed() not yet implemented"
-      return 0
+      return 1
       ;;
     *)
       fail "Unknown package type $type: $package"
@@ -489,8 +502,13 @@ install_p()
   local package="$2"
 
   case "$format" in
-    rpm|deb)
-      $sudo $package_manager_command "$package" || return $? ;;
+    rpm)
+      $sudo $package_manager_command "$package" || return $?
+      ;;
+    deb)
+      $sudo export DEBIAN_FRONTEND=noninteractive
+      $sudo $package_manager_command "$package" || return $?
+      ;;
     *)
       fail "Sorry, no support yet(?) for "$format" packages"
       ;;
