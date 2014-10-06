@@ -60,11 +60,9 @@ fi
 # Auto-detect the package manager and supported package types
 #
 if exists "apt-get"; then
-  package_manager_command="apt-get install"
   package_format="deb"
   supported_formats="$package_format"
 elif exists "yum"; then
-  package_manager_command="yum -y install"
   package_format="rpm"
   supported_formats="$package_format"
 fi
@@ -266,7 +264,7 @@ mirror_project()
   log "Mirroring remote project $project_mirror to $projectdir"
   mkdir -p "$projectdir" || return $?
 
-  # Main project /data download loop  
+  # Main projectdata download loop
   for dl in "$url_file" \
             "$version_file" \
             "$platform_file" \
@@ -290,7 +288,7 @@ mirror_project()
   # Fail if we didn't get any files
   if [[ $data_found -eq 0 ]]; then
     warn "Could not mirror, no data found."
-    return 1 
+    return 1
   fi
 }
 
@@ -352,7 +350,11 @@ load_project()
   local packagedir_value="${packagedir:-$packagedir_default}"
   packagedir="$(expand_string $packagedir_value)"
 
-  local filename_default="$project-$version.$arch.$package_format"
+  local filename_default=
+  case "$package_format" in
+    rpm) filename_default="${project}-${version}.${arch}.rpm" ;;
+    deb) filename_default="${project}_${version}_${arch}.deb" ;;
+  esac
   local filename_value="$(fetch "$projectdir/$package_file" "$platform_tag")"
   filename_value="${filename_value:-$filename_default}"
   filename_value="${filename:-$filename_value}"
@@ -505,11 +507,11 @@ install_p()
 
   case "$format" in
     rpm)
-      $sudo $package_manager_command "$package" || return $?
+      $sudo yum install -y "$package" || return $?
       ;;
     deb)
-      $sudo export DEBIAN_FRONTEND=noninteractive
-      $sudo $package_manager_command "$package" || return $?
+      $sudo env DEBIAN_FRONTEND=noninteractive dpkg -i "$package" || return $?
+      $sudo env DEBIAN_FRONTEND=noninteractive apt-get install -f || return $?
       ;;
     *)
       fail "Sorry, no support yet(?) for "$format" packages"
@@ -528,9 +530,7 @@ install_package()
   if [[ $? -eq 0 ]]; then
     warn "Package manager reports it as already installed, skipping"
   else
-    preinstall || return $?
     install_p "$package_format" "$packagedir/$filename" || return $?
-    postinstall || return $?
     log "Successfully installed $project $version from $filename"
   fi
 }
@@ -549,8 +549,8 @@ Options:
     -M, --mirror URL       Mirror project data using URL as base
     -u, --url URL          Alternate URL to download the package from
     -s, --sha256 SHA256    Checksum of the package
-    --no-download          Do not download any package
-    --no-install           Do not attempt to install packages
+    --no-download          Do not download a package
+    --no-install           Do not attempt to install a package
     --no-scripts           Do not load functions.sh when installing
     --no-verify            Do not verify the package before installing
     -V, --version          Prints the version
@@ -674,8 +674,10 @@ else
   if [[ ! $no_verify -eq 1 ]]; then
     verify_package || fail "Package checksum verification failed."
   fi
+  preinstall || fail "Preinstall script failed."
   if [[ ! $no_install -eq 1 ]]; then
     install_package || fail "Installation failed."
   fi
+  postinstall || fail "Postinstall script failed."
 fi
 
