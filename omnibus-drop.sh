@@ -196,6 +196,7 @@ validate_project()
 {
   local p="$1"
   local valid=1
+  local f
   if [[ -d "$p" ]]; then
     for f in "$url_file" \
              "$version_file" \
@@ -221,6 +222,7 @@ validate_project()
 known_projects()
 {
   local known_projects=()
+  local p
   for p in "$working_dir"/*; do
     validate_project "$p" || continue
     known_projects+=("$p")
