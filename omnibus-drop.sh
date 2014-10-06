@@ -660,26 +660,20 @@ detect_platform || fail "Could not detect platform."
 if [[ $# -eq 0 ]]; then
   log "omnibus-drop v${ver} platform=$platform release=$release arch=$arch"
   known_projects
-  exit
-fi
-
-parse_options "$@" || exit $?
-
-if [[ -n "$project_mirror" ]]; then
-  mirror_project || fail "Mirroring failed."
-fi
-
-load_project || fail "Could not load project: $project"
-
-if [[ ! $no_download -eq 1 ]]; then
-  download_package || fail "Package download failed."
-fi
-
-if [[ ! $no_verify -eq 1 ]]; then
-  verify_package || fail "Package checksum verification failed."
-fi
-
-if [[ ! $no_install -eq 1 ]]; then
-  install_package || fail "Installation failed."
+else
+  parse_options "$@" || exit $?
+  if [[ -n "$project_mirror" ]]; then
+    mirror_project || fail "Mirroring failed."
+  fi
+  load_project || fail "Could not load project: $project"
+  if [[ ! $no_download -eq 1 ]]; then
+    download_package || fail "Package download failed."
+  fi
+  if [[ ! $no_verify -eq 1 ]]; then
+    verify_package || fail "Package checksum verification failed."
+  fi
+  if [[ ! $no_install -eq 1 ]]; then
+    install_package || fail "Installation failed."
+  fi
 fi
 
