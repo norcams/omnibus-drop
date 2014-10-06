@@ -337,7 +337,7 @@ load_project()
   local version_default=stable
   local version_value="$(fetch "$projectdir/$version_file" "$version")"
   version_value="${version_value:-$version_default}"
-  version="${version_value:-$version}"
+  version="${version:-$version_value}"
 
   local platform_tag_default="$platform/$release/$arch"
   local platform_tag_value="$(fetch "$projectdir/$platform_file" "$platform/$release/$arch")"
@@ -355,7 +355,7 @@ load_project()
   local filename_default="$project-$version.$arch.$package_format"
   local filename_value="$(fetch "$projectdir/$package_file" "$platform_tag")"
   filename_value="${filename_value:-$filename_default}"
-  filename="${filename_value:-$filename}"
+  filename_value="${filename:-$filename_value}"
   filename="$(expand_string $filename_value)"
 
   local checksum_value="$(fetch "$projectdir/$checksum_file" "$filename")"
