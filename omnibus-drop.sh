@@ -548,8 +548,9 @@ Options:
     -u, --url URL          Alternate URL to download the package from
     -s, --sha256 SHA256    Checksum of the package
     --no-download          Do not download any package
-    --no-verify            Do not verify the package before installing
+    --no-install           Do not attempt to install packages
     --no-scripts           Do not load functions.sh when installing
+    --no-verify            Do not verify the package before installing
     -V, --version          Prints the version
     -h, --help             Prints this message
 
@@ -595,12 +596,16 @@ parse_options()
         no_download=1
         shift
         ;;
-      --no-verify)
-        no_verify=1
+      --no-install)
+        no_install=1
         shift
         ;;
       --no-scripts)
         no_scripts=1
+        shift
+        ;;
+      --no-verify)
+        no_verify=1
         shift
         ;;
       -V|--version)
@@ -674,5 +679,7 @@ if [[ ! $no_verify -eq 1 ]]; then
   verify_package || fail "Package checksum verification failed."
 fi
 
-install_package || fail "Installation failed." 
+if [[ ! $no_install -eq 1 ]]; then
+  install_package || fail "Installation failed."
+fi
 
