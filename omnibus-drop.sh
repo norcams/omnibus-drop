@@ -364,12 +364,6 @@ load_project()
   local checksum_value="$(fetch "$projectdir/$checksum_file" "$filename")"
   checksum="${checksum:-$checksum_value}"
 
-  # Warn if url is empty and auto-skip downloading
-  if [[ -z "$url" ]]; then
-    warn "No URL found, skipping package download."
-    no_download=1
-  fi
-
   # Fail if package is not supported on this system
   is_supported "$supported_formats" "$package_format" || return $?
 
@@ -415,9 +409,13 @@ download()
 #
 download_package()
 {
-  log "Downloading package: $url"
-  mkdir -p "$packagedir" || return $?
-  download "$url" "$packagedir/$filename" || return $?
+  if [[ -n "$url" ]]; then
+    log "Downloading package: $url"
+    mkdir -p "$packagedir" || return $?
+    download "$url" "$packagedir/$filename" || return $?
+  else
+    log "No url specified, package download skipped."
+  fi
 }
 
 #
