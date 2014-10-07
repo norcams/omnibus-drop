@@ -45,8 +45,8 @@ exists() {
 #
 # Auto-detect the downloader.
 #
-if   exists "wget"; then downloader="wget"
-elif exists "curl"; then downloader="curl"
+if   exists "curl"; then downloader="curl"
+elif exists "wget"; then downloader="wget"
 fi
 
 #
@@ -196,11 +196,11 @@ validate_project()
   local valid=1
   local f
   if [[ -d "$p" ]]; then
-    for f in "$url_file" \
-             "$version_file" \
+    for f in "$checksum_file" \
+             "$package_file" \
              "$platform_file" \
-             "$checksum_file" \
-             "$package_file"; do
+             "$version_file" \
+             "$url_file"; do
       if [[ -s "$p/$f" ]]; then
         if grep -q -E '^[-_\.\ \/a-zA-Z0-9]+:\ .*$' "$p/$f"; then
           valid=0
@@ -253,42 +253,43 @@ known_projects()
 }
 
 #
-# Mirrors remote project files from a location provided on the command line
+# Downloads remote project files from a location provided on the command line
 #
-mirror_project()
+download_project()
 {
-  local data_found=0
-
-  # Display remote and local paths, warn if local path already exists
-  # as we then skip downloading existing files
-  log "Mirroring remote project $project_mirror to $projectdir"
-  mkdir -p "$projectdir" || return $?
-
-  # Main projectdata download loop
-  for dl in "$url_file" \
-            "$version_file" \
-            "$platform_file" \
-            "$functions_file" \
-            "$checksum_file" ; do
-    # Skip any files that already exits and set data_found=1
-    if [[ -s "$projectdir/$dl" ]]; then
-      warn "$project_mirror/$dl -> $project/$dl: Filename already exists, skipping as OK"
-      data_found=1
-      continue
+  # Skip download if local project already exists
+  if [[ -d "$projectdir" ]]; then
+    warn "$projectdir already exists, project download skipped."
+  else
+    log "Downloading remote project $remote_project to $projectdir"
+    mkdir -p "$projectdir" || return $?
+    # Main download loop
+    local data_found=0
+    for dl in "$checksum_file" \
+              "$functions_file" \
+              "$package_file" \
+              "$platform_file" \
+              "$version_file" \
+              "$url_file" ; do
+      # Skip any files that already exits and set data_found=1
+      if [[ -s "$projectdir/$dl" ]]; then
+        warn "$remote_project/$dl -> $project/$dl: File exists, skipping."
+        data_found=1
+        continue
+      fi
+      # Try downloading
+      local dl_exit_code=$(download "$remote_project/$dl" "$projectdir")
+      # If we get a non-zero file log and set dl_ok
+      if [[ $dl_exit_code -eq 0 && -s "$projectdir/$dl" ]]; then
+        log "$remote_project/$dl -> $project/$dl: OK"
+        data_found=1
+      fi
+    done
+    # Fail if we didn't get any files
+    if [[ $data_found -eq 0 ]]; then
+      warn "Could not download project, no data found."
+      return 1
     fi
-    # Try downloading
-    local dl_exit_code=$(download "$project_mirror/$dl" "$projectdir")
-    # If we get a non-zero file log and set dl_ok
-    if [[ $dl_exit_code -eq 0 && -s "$projectdir/$dl" ]]; then
-      log "$project_mirror/$dl -> $project/$dl: OK"
-      data_found=1
-    fi
-  done
-
-  # Fail if we didn't get any files
-  if [[ $data_found -eq 0 ]]; then
-    warn "Could not mirror, no data found."
-    return 1
   fi
 }
 
@@ -544,7 +545,7 @@ usage: omnibus-drop [OPTIONS] [PROJECT [VERSION]]
 Options:
 
     -d, --package-dir DIR  Path to local package directory
-    -M, --mirror URL       Mirror project data using URL as base
+    -r, --remote URL       Download remote project using URL as base
     -u, --url URL          Alternate URL to download the package from
     -s, --sha256 SHA256    Checksum of the package
     --no-download          Do not download a package
@@ -558,7 +559,7 @@ Examples:
 
     $ omnibus-drop puppet
     $ omnibus-drop puppet 3.6.2
-    $ omnibus-drop -M https://url.to/projects/root puppet
+    $ omnibus-drop -r https://url.to/projects/root puppet
 
 USAGE
 }
@@ -580,8 +581,8 @@ parse_options()
         packagedir="$2"
         shift 2
         ;;
-      -M|--mirror)
-        project_mirror="$2"
+      -r|--remote)
+        remote_project="$2"
         shift 2
         ;;
       -u|--url)
@@ -662,8 +663,8 @@ if [[ $# -eq 0 ]]; then
   known_projects
 else
   parse_options "$@" || exit $?
-  if [[ -n "$project_mirror" ]]; then
-    mirror_project || fail "Mirroring failed."
+  if [[ -n "$remote_project" ]]; then
+    download_project || fail "Downloading remote project failed."
   fi
   load_project || fail "Could not load project: $project"
   if [[ ! $no_download -eq 1 ]]; then
