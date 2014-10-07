@@ -143,7 +143,7 @@ detect_platform()
     fi
   elif [[ -f /etc/SuSE-release ]]; then
     local enterprise=$(grep -q 'Enterprise' /etc/SuSE-release)
-    if [[ ! -z $enterprise ]]; then
+    if [[ -n $enterprise ]]; then
       platform="sles"
       release=$(awk '/^VERSION/ {V = $3}; /^PATCHLEVEL/ {P = $3}; END {print V "." P}' /etc/SuSE-release)
     else
@@ -398,7 +398,7 @@ download()
   [[ -f "$dest" ]] && return
 
   case "$downloader" in
-    wget) wget --progress=bar:force -c -O "$dest.part" "$url" || return $? ;;
+    wget) wget --no-verbose -c -O "$dest.part" "$url" || return $? ;;
     curl) curl -sfLC - -o "$dest.part" "$url" || return $? ;;
     "")
       error "Could not find wget or curl"
@@ -472,12 +472,12 @@ is_supported()
 }
 
 #
-# Checks if a package is already installed
+# Check if package is already installed and return 0 if it is
 #
-is_installed()
+installed()
 {
-  local format="$1"
-  local package="$2"
+  local format="$package_format"
+  local package="$packagedir/$filename"
 
   case "$format" in
     rpm)
@@ -487,12 +487,12 @@ is_installed()
       ;;
     deb)
       local name="$(dpkg -f "$package" Package 2>/dev/null)"
-      local vers="$(dpkg -f "$package" Version 2/dev/null)"
+      local vers="$(dpkg -f "$package" Version 2>/dev/null)"
       local inst="$(dpkg-query -W -f '${Version}\n' $name 2>/dev/null)"
-      if [[ (! -z $vers) && ($vers == $inst) ]]; then
-        return 1
-      else
+      if [[ -n $name && ($vers == $inst) ]]; then
         return 0
+      else
+        return 1
       fi
       ;;
     *)
@@ -524,19 +524,13 @@ install_p()
 }
 
 #
-# Call package manager to check if package is already installed 
-# If not, we do the actual install and log
+# Do the package installation
 #
 install_package()
 {
   log "Installing $project $version from $packagedir/$filename"
-  is_installed "$package_format" "$packagedir/$filename"
-  if [[ $? -eq 0 ]]; then
-    warn "Package manager reports it as already installed, skipping"
-  else
-    install_p "$package_format" "$packagedir/$filename" || return $?
-    log "Successfully installed $project $version from $filename"
-  fi
+  install_p "$package_format" "$packagedir/$filename" || return $?
+  log "Successfully installed $project $version from $filename"
 }
 
 #
@@ -678,10 +672,14 @@ else
   if [[ ! $no_verify -eq 1 ]]; then
     verify_package || fail "Package checksum verification failed."
   fi
-  preinstall || fail "Preinstall script failed."
-  if [[ ! $no_install -eq 1 ]]; then
-    install_package || fail "Installation failed."
-  fi
-  postinstall || fail "Postinstall script failed."
+  if installed; then
+    log "Package manager reports $project $version as already installed."
+  else
+    preinstall || fail "Preinstall script failed."
+    if [[ ! $no_install -eq 1 ]]; then
+      install_package || fail "Installation failed."
+    fi
+    postinstall || fail "Postinstall script failed."
+ fi
 fi
 
