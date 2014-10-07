@@ -481,15 +481,19 @@ is_installed()
 
   case "$format" in
     rpm)
-      local package_data="$($sudo rpm -qp "$package")"
-      [[ ! $? -eq 0 ]] && fail "Error while querying $package"
-      $sudo rpm --quiet -qi "$package_data"
+      local data="$($sudo rpm -qp "$package" 2>/dev/null)"
+      $sudo rpm --quiet -qi "$data"
       return $?
       ;;
     deb)
-      # FIXME
-      echo "FIXME deb is_installed() not yet implemented"
-      return 1
+      local name="$(dpkg -f "$package" Package 2>/dev/null)"
+      local vers="$(dpkg -f "$package" Version 2/dev/null)"
+      local inst="$(dpkg-query -W -f '${Version}\n' $name 2>/dev/null)"
+      if [[ (! -z $vers) && ($vers == $inst) ]]; then
+        return 1
+      else
+        return 0
+      fi
       ;;
     *)
       fail "Unknown package type $type: $package"
@@ -551,7 +555,7 @@ Options:
     -s, --sha256 SHA256    Checksum of the package
     --no-download          Do not download a package
     --no-install           Do not attempt to install a package
-    --no-scripts           Do not load functions.sh when installing
+    --no-scripts           Do not load preinstall() and postinstall()
     --no-verify            Do not verify the package before installing
     -V, --version          Prints the version
     -h, --help             Prints this message
