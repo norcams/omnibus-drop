@@ -674,7 +674,7 @@ else
     verify_package || fail "Package checksum verification failed."
   fi
   if installed; then
-    log "Package manager reports $project $version as already installed."
+    log "Package $project $version is already installed."
   else
     preinstall || fail "Preinstall script failed."
     if [[ ! $no_install -eq 1 ]]; then
