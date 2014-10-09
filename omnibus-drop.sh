@@ -394,7 +394,7 @@ download()
 
   case "$downloader" in
     wget) wget --no-verbose -c -O "$dest.part" "$url" || return $? ;;
-    curl) curl -sfLC - -o "$dest.part" "$url" || return $? ;;
+    curl) curl -s -f -L -C - -o "$dest.part" "$url" || return $? ;;
     "")
       error "Could not find wget or curl"
       return 1
