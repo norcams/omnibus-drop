@@ -242,7 +242,7 @@ known_projects()
       cat "$p/$platform_file" | sed 's/^/    /'
     fi
      if [[ -f "$p/$package_file" ]]; then
-      echo "  Local source paths:"
+      echo "  Package filename formats:"
       cat "$p/$package_file" | sed 's/^/    /'
     fi
     if [[ -f "$p/$url_file" ]]; then
@@ -542,7 +542,7 @@ usage: omnibus-drop [OPTIONS] [PROJECT [VERSION]]
 
 Options:
 
-    -d, --package-dir DIR  Path to local package directory
+    -d, --directory DIR    Path to local package directory
     -r, --remote URL       Download remote project using URL as base
     -u, --url URL          Alternate URL to download the package from
     -s, --sha256 SHA256    Checksum of the package
@@ -557,7 +557,7 @@ Examples:
 
     $ omnibus-drop puppet
     $ omnibus-drop puppet 3.6.2
-    $ omnibus-drop -r https://url.to/projects/root puppet
+    $ omnibus-drop -r https://url.to/project/root puppet
 
 USAGE
 }
