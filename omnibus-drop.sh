@@ -427,12 +427,12 @@ verify()
   local checksum="$2"
 
   if [[ -z "$verifier" ]]; then
-    error "Unable to find the checksum utility"
+    error "Unable to find the checksum utility."
     return 1
   fi
 
   if [[ -z "$checksum" ]]; then
-    error "No checksum given"
+    error "No checksum given."
     return 1
   fi
 
